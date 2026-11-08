@@ -1,0 +1,37 @@
+{
+  "id": {
+    "description": "提供商源 ID。在 AstrBot「服务提供商」页面新建本类型提供商时填写，AstrBot 用「提供商ID/模型ID」引用它。",
+    "type": "string",
+    "default": "glm_budget",
+    "hint": "本插件的参数都在「服务提供商」页面生效；本文件用于后台展示字段名与默认值，插件不读取「插件配置」页中的值。"
+  },
+  "enable": {
+    "description": "是否启用该提供商。",
+    "type": "bool",
+    "default": true
+  },
+  "key": {
+    "description": "智谱开放平台（按量计费）的 API Key。填字符串或字符串列表，代码只取第一个。",
+    "type": "list",
+    "default": [],
+    "hint": "请使用智谱开放平台按量 API 的 Key；本插件不内置任何 Key，只允许智谱官方按量入口。"
+  },
+  "api_base": {
+    "description": "智谱 API 入口地址。",
+    "type": "string",
+    "default": "https://open.bigmodel.cn/api/paas/v4/",
+    "hint": "代码会校验：去掉末尾斜杠后必须等于 https://open.bigmodel.cn/api/paas/v4，否则提供商加载失败。"
+  },
+  "model": {
+    "description": "模型 ID。本预算通道只接受 glm-5.3-flashx。",
+    "type": "string",
+    "default": "glm-5.3-flashx",
+    "hint": "其他模型会被直接拒绝：账本只按该模型的价格核价。"
+  },
+  "timeout": {
+    "description": "单次请求超时时间，单位秒。",
+    "type": "int",
+    "default": 45,
+    "hint": "失败不会自动重试；失败、取消或拿不到权威用量时，本次预留额度会保留在账本里。"
+  }
+}

@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 插件运行时数据（AstrBot 的 data/ 目录，绝不能提交）
+data/
+logs/
+*.log
+*.sqlite3
+*.sqlite3-journal
+
+# 本地配置与密钥
+.env
+.env.*
+config.local.*
+
+# 编辑器 / 系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
