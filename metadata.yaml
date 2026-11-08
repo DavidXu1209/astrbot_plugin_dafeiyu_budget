@@ -4,7 +4,7 @@ desc: |
   在 AstrBot 原生智谱适配器外面加一层每月 50 元的预算保护账本：每次付费请求先预留额度，
   拿到厂商返回的用量后再结算；聊天和后台任务共享同一本账，超预算直接拒绝新的付费请求。
   只允许智谱官方按量入口的 glm-5.3-flashx，按输入 2 元、输出 7 元每百万 token 保守记账。
-version: 0.1.0
+version: 0.1.1
 author: David Xu
 repo: https://github.com/DavidXu1209/astrbot_plugin_dafeiyu_budget
 astrbot_version: ">=4.16.0"
