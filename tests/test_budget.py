@@ -1,8 +1,8 @@
 """Offline budget/payload/native-adapter tests; no real API requests."""
 import asyncio
 import base64
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import importlib.util
 import io
 from pathlib import Path
 import sys
@@ -12,11 +12,131 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _install_astrbot_stub():
+    """Let the suite run without a full AstrBot install. Real packages win."""
+    try:
+        import astrbot.core.provider.entities  # noqa: F401
+        import astrbot.core.provider.sources.zhipu_source  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    @dataclass
+    class TokenUsage:
+        input_other: int = 0
+        input_cached: int = 0
+        output: int = 0
+
+        @property
+        def input(self):
+            return self.input_other + self.input_cached
+
+    @dataclass
+    class LLMResponse:
+        role: str
+        completion_text: str = ''
+        usage: TokenUsage | None = None
+        raw_completion: object = None
+
+    class ProviderZhipu:
+        async def _query(self, payloads, tools, *, request_max_retries=None, conversation_id=None):
+            raise NotImplementedError
+
+        async def _handle_api_error(self, error, *args, **kwargs):
+            raise error
+
+    class _Logger:
+        def warning(self, *args, **kwargs):
+            pass
+
+        def error(self, *args, **kwargs):
+            pass
+
+        def exception(self, *args, **kwargs):
+            pass
+
+    def _package(name):
+        module = ModuleType(name)
+        module.__path__ = []
+        module.__package__ = name
+        sys.modules[name] = module
+        return module
+
+    def _module(name, **attrs):
+        module = ModuleType(name)
+        module.__package__ = name.rpartition('.')[0]
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        sys.modules[name] = module
+        return module
+
+    class ProviderType:
+        CHAT_COMPLETION = 'chat_completion'
+
+    class Star:
+        def __init__(self, context):
+            self.context = context
+
+    class StarTools:
+        @staticmethod
+        def get_data_dir(name):
+            return Path('.')
+
+    def register_provider_adapter(*args, **kwargs):
+        def decorate(cls):
+            return cls
+        return decorate
+
+    class _PermissionType:
+        ADMIN = 'admin'
+
+    def _passthrough(*args, **kwargs):
+        def decorate(fn):
+            return fn
+        return decorate
+
+    class _Filter:
+        PermissionType = _PermissionType
+        command = staticmethod(_passthrough)
+        permission_type = staticmethod(_passthrough)
+
+    _package('astrbot')
+    api = _package('astrbot.api')
+    api.logger = _Logger()
+    _module('astrbot.api.provider', ProviderType=ProviderType)
+    _module('astrbot.api.star', Star=Star, StarTools=StarTools)
+    _module('astrbot.api.event', filter=_Filter())
+    _package('astrbot.core')
+    _package('astrbot.core.provider')
+    _module(
+        'astrbot.core.provider.register',
+        provider_cls_map={},
+        provider_registry=[],
+        register_provider_adapter=register_provider_adapter,
+    )
+    _package('astrbot.core.provider.sources')
+    _module('astrbot.core.provider.sources.zhipu_source', ProviderZhipu=ProviderZhipu)
+    _module('astrbot.core.provider.entities', LLMResponse=LLMResponse, TokenUsage=TokenUsage)
+
+
+_install_astrbot_stub()
 pkg = ModuleType('budget_acceptance')
 pkg.__path__ = [str(ROOT)]
 sys.modules[pkg.__name__] = pkg
-from budget_acceptance.ledger import BudgetDenied, Ledger, LIMIT
-from budget_acceptance.main import BudgetedZhipu, MODEL, MAX_OUTPUT, bound_payload
+from budget_acceptance.ledger import COFFEE, MILK_TEA, SPEAKING_KEEP, BudgetDenied, Ledger, LIMIT
+from budget_acceptance.main import (
+    INPUT_MICRO_YUAN,
+    MAX_OUTPUT,
+    MODEL,
+    OUTPUT_MICRO_YUAN,
+    BudgetedZhipu,
+    bound_payload,
+    prepare_provider_config,
+    render_treat,
+    render_wallet,
+)
 from astrbot.core.provider.sources.zhipu_source import ProviderZhipu
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 
@@ -62,9 +182,60 @@ class LedgerChecks(IsolatedAsyncioTestCase):
             await self.ledger.reserve(1, NOW)
 
     async def test_invalid_reservations_rejected(self):
-        for amount in (-1, 0, 0.1, LIMIT+1):
+        for amount in (-1, 0, True, 0.1, LIMIT+1):
             with self.assertRaises(BudgetDenied):
                 await self.ledger.reserve(amount, NOW)
+
+    async def test_freeze_stops_at_the_month_boundary(self):
+        token = await self.ledger.reserve(100, NOW)
+        self.assertFalse(await self.ledger.settle(token, 101))
+        december = NOW.replace(month=12, day=1)
+        self.assertEqual(self.ledger.total(december), 0)
+        self.assertIsInstance(await self.ledger.reserve(1, december), str)
+
+    async def test_seed_rejects_freeze_marker_names(self):
+        with self.assertRaises(ValueError):
+            self.ledger.seed('freeze-2026-11', 1, '2026-11')
+
+    async def test_wallet_summary_shows_spend_hold_and_freeze(self):
+        await self.ledger.reserve(1_000_000, NOW)
+        token = await self.ledger.reserve(2_000_000, NOW)
+        self.assertTrue(await self.ledger.settle(token, 500_000))
+        text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('大肥鱼钱包 · 2026-11', text)
+        self.assertIn('已花 0.50 元', text)
+        self.assertIn('预留未结 1.00 元', text)
+        self.assertIn('还剩 48.50 元', text)
+        self.assertNotIn('本月已冻上', text)
+        frozen = await self.ledger.reserve(100, NOW)
+        self.assertFalse(await self.ledger.settle(frozen, 101))
+        frozen_text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('还剩 0.00 元', frozen_text)
+        self.assertIn('本月已冻上，下月自动解开。', frozen_text)
+
+    async def test_drink_is_one_chance_and_leaves_speaking_money(self):
+        granted = await self.ledger.ask_treat('10001', 'milk_tea', NOW, roll=0)
+        self.assertEqual(granted['result'], 'granted')
+        self.assertIn('中了', render_treat(granted))
+        self.assertEqual(self.ledger.total(NOW), MILK_TEA)
+        text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('请客 15.00 元（奶茶，10001）', text)
+        self.assertEqual((await self.ledger.summary(NOW))['remaining'], LIMIT - MILK_TEA)
+        self.assertEqual((await self.ledger.ask_treat('10001', 'coffee', NOW, roll=0))['result'], 'asked')
+        self.assertEqual((await self.ledger.ask_treat('10002', 'coffee', NOW, roll=0))['result'], 'taken')
+
+        empty = Ledger(Path(self.temp.name) / 'other.sqlite3')
+        await empty.reserve(LIMIT - SPEAKING_KEEP - COFFEE + 1, NOW)
+        broke = await empty.ask_treat('10003', 'coffee', NOW, roll=0)
+        self.assertEqual(broke['result'], 'broke')
+        self.assertEqual((await empty.ask_treat('10003', 'coffee', NOW, roll=0))['result'], 'broke')
+
+        fresh = Ledger(Path(self.temp.name) / 'miss.sqlite3')
+        missed = await fresh.ask_treat('10004', 'coffee', NOW, roll=9999)
+        self.assertEqual(missed['result'], 'missed')
+        self.assertEqual(fresh.total(NOW), 0)
+        self.assertIn('没中', render_treat(missed))
+        self.assertEqual((await fresh.ask_treat('10004', 'coffee', NOW, roll=0))['result'], 'asked')
 
 
 class PayloadChecks(IsolatedAsyncioTestCase):
@@ -88,10 +259,41 @@ class PayloadChecks(IsolatedAsyncioTestCase):
         self.assertEqual(body['max_tokens'], MAX_OUTPUT)
         self.assertGreater(reserve, 65536*2)
 
+    def _png(self, size=(8, 8)):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGB', size, 'red').save(buf, format='PNG')
+        return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+
     async def test_remote_url_and_five_images_rejected(self):
-        part = {'type': 'image_url', 'image_url': {'url': 'https://invalid.example/a.png'}}
+        remote = {'type': 'image_url', 'image_url': {'url': 'https://invalid.example/a.png'}}
         with self.assertRaises(BudgetDenied):
-            bound_payload({'model': MODEL, 'messages': [{'role':'user','content':[part]}]})
+            bound_payload({'model': MODEL, 'messages': [{'role':'user','content':[remote]}]})
+        images = [{'type': 'image_url', 'image_url': {'url': self._png()}} for _ in range(5)]
+        with self.assertRaises(BudgetDenied):
+            bound_payload({'model': MODEL, 'messages': [{'role':'user','content': images}]})
+
+    async def test_unpriced_media_malformed_image_and_smuggled_bytes(self):
+        for part in (
+            {'type': 'input_audio', 'input_audio': {'data': 'abc', 'format': 'mp3'}},
+            {'type': 'video_url', 'video_url': {'url': 'https://invalid.example/a.mp4'}},
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(b'not-an-image').decode()}},
+            {'type': 'image_url', 'image_url': {'url': self._png()}, 'smuggle': '字' * 50000},
+        ):
+            with self.assertRaises(BudgetDenied):
+                bound_payload({'model': MODEL, 'messages': [{'role': 'user', 'content': [part]}]})
+
+    async def test_provider_config_rejects_unofficial_base_and_blank_key(self):
+        with self.assertRaises(BudgetDenied):
+            prepare_provider_config({'api_base': 'https://example.invalid/v4', 'key': ['sk-test']})
+        with self.assertRaises(BudgetDenied):
+            prepare_provider_config({'api_base': 'https://open.bigmodel.cn/api/paas/v4/', 'key': ['  ']})
+        config = prepare_provider_config({
+            'api_base': 'https://open.bigmodel.cn/api/paas/v4',
+            'key': 'sk-test',
+        })
+        self.assertEqual(config['key'], ['sk-test'])
+        self.assertEqual(config['custom_extra_body']['max_tokens'], MAX_OUTPUT)
 
 
 class NativeAdapterChecks(IsolatedAsyncioTestCase):
@@ -99,20 +301,87 @@ class NativeAdapterChecks(IsolatedAsyncioTestCase):
         self.temp = TemporaryDirectory()
         self.provider = object.__new__(BudgetedZhipu)
         self.provider.ledger = Ledger(Path(self.temp.name)/'budget.sqlite3')
+        self.provider.api_keys = ['sk-test']
         self.payload = {'model': MODEL, 'messages': [{'role':'user','content':'synthetic'}]}
+
+    def _priced(self, input_other=100, input_cached=20, output=30, raw=None):
+        response = LLMResponse(
+            role='assistant',
+            completion_text='synthetic',
+            usage=TokenUsage(input_other=input_other, input_cached=input_cached, output=output),
+        )
+        response.raw_completion = SimpleNamespace(usage=object() if raw is None else raw)
+        return response
 
     def tearDown(self):
         self.temp.cleanup()
 
     async def test_native_request_once_and_usage_settlement(self):
-        response = LLMResponse(role='assistant', completion_text='synthetic', usage=TokenUsage(input_other=100, input_cached=20, output=30))
-        response.raw_completion = SimpleNamespace(usage=object())
+        response = self._priced()
         with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=response)) as native:
             result = await self.provider._query(self.payload, None)
         self.assertIs(result, response)
         native.assert_awaited_once()
         self.assertEqual(native.await_args.kwargs['request_max_retries'], 1)
-        self.assertEqual(self.provider.ledger.total(), 120*2+30*7)
+        self.assertEqual(self.provider.ledger.total(), 120*INPUT_MICRO_YUAN+30*OUTPUT_MICRO_YUAN)
+
+    async def test_raw_usage_and_reasoning_tokens_cannot_underbill(self):
+        response = self._priced(0, 0, 0, raw={
+            'prompt_tokens': 10.2,
+            'completion_tokens': 4,
+            'completion_tokens_details': {'reasoning_tokens': 9},
+        })
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=response)):
+            await self.provider._query(self.payload, None)
+        self.assertEqual(self.provider.ledger.total(), 11*INPUT_MICRO_YUAN+9*OUTPUT_MICRO_YUAN)
+        # reasoning_tokens is a subset of completion_tokens here, so it must not be added twice.
+        subset = self._priced(0, 0, 0, raw={
+            'prompt_tokens': 8,
+            'completion_tokens': 40,
+            'completion_tokens_details': {'reasoning_tokens': 9},
+        })
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=subset)):
+            await self.provider._query(self.payload, None)
+        self.assertEqual(
+            self.provider.ledger.total(),
+            11*INPUT_MICRO_YUAN+9*OUTPUT_MICRO_YUAN + 8*INPUT_MICRO_YUAN+40*OUTPUT_MICRO_YUAN,
+        )
+
+    async def test_zero_usage_keeps_reserve_and_garbage_freezes_month(self):
+        response = self._priced(0, 0, 0)
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=response)):
+            await self.provider._query(self.payload, None)
+        kept = self.provider.ledger.total()
+        self.assertGreater(kept, 0)
+        bad = self._priced(0, 0, 0, raw={'prompt_tokens': -1, 'completion_tokens': 3})
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=bad)):
+            await self.provider._query(self.payload, None)
+        with self.assertRaises(BudgetDenied):
+            await self.provider.ledger.reserve(1)
+
+    async def test_settle_failure_still_returns_reply(self):
+        response = self._priced()
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=response)):
+            with patch.object(self.provider.ledger, 'settle', AsyncMock(side_effect=RuntimeError('db'))):
+                result = await self.provider._query(self.payload, None)
+        self.assertIs(result, response)
+        self.assertGreater(self.provider.ledger.total(), 0)
+
+    async def test_missing_key_never_contacts_api(self):
+        self.provider.api_keys = ['']
+        with patch.object(ProviderZhipu, '_query', AsyncMock()) as native:
+            with self.assertRaises(BudgetDenied):
+                await self.provider._query(self.payload, None)
+            native.assert_not_awaited()
+            self.assertEqual(self.provider.ledger.total(), 0)
+
+    async def test_stream_is_one_metered_request(self):
+        response = self._priced()
+        with patch.object(ProviderZhipu, '_query', AsyncMock(return_value=response)) as native:
+            chunks = [item async for item in self.provider._query_stream(self.payload, None)]
+        self.assertEqual(chunks, [response])
+        native.assert_awaited_once()
+        self.assertEqual(self.provider.ledger.total(), 120*INPUT_MICRO_YUAN+30*OUTPUT_MICRO_YUAN)
 
     async def test_missing_usage_retains_reserve(self):
         response = LLMResponse(role='assistant', completion_text='synthetic')

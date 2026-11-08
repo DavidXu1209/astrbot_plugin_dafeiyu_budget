@@ -1,8 +1,8 @@
 {
   "id": {
-    "description": "提供商源 ID。在 AstrBot「服务提供商」页面新建本类型提供商时填写，AstrBot 用「提供商ID/模型ID」引用它。",
+    "description": "提供商源 ID。在 AstrBot「服务提供商」页面新建大肥鱼钱包时填写，AstrBot 用「提供商ID/模型ID」引用它。",
     "type": "string",
-    "default": "glm_budget",
+    "default": "dafeiyu_wallet",
     "hint": "本插件的参数都在「服务提供商」页面生效；本文件用于后台展示字段名与默认值，插件不读取「插件配置」页中的值。"
   },
   "enable": {
@@ -14,7 +14,7 @@
     "description": "智谱开放平台（按量计费）的 API Key。填字符串或字符串列表，代码只取第一个。",
     "type": "list",
     "default": [],
-    "hint": "请使用智谱开放平台按量 API 的 Key；本插件不内置任何 Key，只允许智谱官方按量入口。"
+    "hint": "请使用智谱开放平台按量 API 的 Key。空 Key 会在加载提供商时拒绝，避免请求失败仍占用预留。本插件不内置任何 Key，只允许智谱官方按量入口。"
   },
   "api_base": {
     "description": "智谱 API 入口地址。",
