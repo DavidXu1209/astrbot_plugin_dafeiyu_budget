@@ -243,6 +243,37 @@ def format_yuan(micro):
     return f'{sign}{body} 元'
 
 
+_DRINK_NAMES = {'milk_tea': '奶茶', 'coffee': '咖啡'}
+
+
+def _chance_text(chance):
+    percent = chance // 100
+    if chance > 0 and percent == 0:
+        return '不到 1%'
+    return f'{percent}%'
+
+
+def render_treat(outcome):
+    name = _DRINK_NAMES.get(outcome['kind'], '饮料')
+    result = outcome['result']
+    if result == 'granted':
+        return (
+            f"中了。这个月的{name}给你留了 {format_yuan(outcome['amount'])}，从钱包里扣。"
+            "我下不了单，主人看到这笔再去买。"
+        )
+    if result == 'missed':
+        return f"这个月就这一次机会，概率 {_chance_text(outcome['chance'])}，没中。下个月再来。"
+    if result == 'broke':
+        return "扣掉留着说话的 15 元之后，这杯请不起。这次不算你问过，等预留结算下去再试。"
+    if result == 'asked':
+        return "你这个月已经问过了。"
+    if result == 'taken':
+        return "这个月那杯已经答应别人了。"
+    if result == 'frozen':
+        return "钱包本月冻上了，请不了。"
+    return "认不出是谁在问，这次不算。"
+
+
 def render_wallet(summary):
     states = summary['states']
     spent = states.get('settled', 0) + states.get('overrun', 0) + states.get('prior_trial', 0)
@@ -254,6 +285,10 @@ def render_wallet(summary):
         f"预留未结 {format_yuan(held)}",
         f"还剩 {format_yuan(summary['remaining'])}",
     ]
+    treat_for = summary.get('treat_for')
+    if treat_for:
+        name = _DRINK_NAMES.get(treat_for['kind'], '饮料')
+        lines.append(f"请客 {format_yuan(treat_for['amount'])}（{name}，{treat_for['user']}）")
     if summary['frozen']:
         lines.append('本月已冻上，下月自动解开。')
     return '\n'.join(lines)
@@ -322,6 +357,35 @@ class BudgetPlugin(Star):
     async def wallet(self, event):
         """查看大肥鱼钱包本月余额。仅管理员。"""
         yield event.plain_result(render_wallet(await self._ledger().summary()))
+
+    def _sender_key(self, event):
+        sender = getattr(getattr(event, 'message_obj', None), 'sender', None)
+        user_id = getattr(sender, 'user_id', None)
+        if user_id is None or user_id == '':
+            user_id = event.get_sender_id()
+        return str(user_id).strip()
+
+    async def _ask_for_drink(self, event, kind):
+        # Asking is free. Stop the event so it does not fall through into a paid model call.
+        user_key = self._sender_key(event)
+        if not user_key:
+            yield event.plain_result(render_treat({'result': 'bad_user', 'kind': kind, 'chance': 0, 'amount': 0}))
+        else:
+            outcome = await self._ledger().ask_treat(user_key, kind)
+            yield event.plain_result(render_treat(outcome))
+        event.stop_event()
+
+    @filter.command('奶茶')
+    async def milk_tea(self, event):
+        """向大肥鱼钱包要一杯奶茶。每人每月一次机会，不是必中。"""
+        async for result in self._ask_for_drink(event, 'milk_tea'):
+            yield result
+
+    @filter.command('咖啡')
+    async def coffee(self, event):
+        """向大肥鱼钱包要一杯咖啡。每人每月一次机会，不是必中。"""
+        async for result in self._ask_for_drink(event, 'coffee'):
+            yield result
 
     async def initialize(self):
         manager = self.context.provider_manager

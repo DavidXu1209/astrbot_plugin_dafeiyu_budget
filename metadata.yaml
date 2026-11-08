@@ -2,7 +2,8 @@ name: astrbot_plugin_dafeiyu_budget
 display_name: 大肥鱼钱包
 desc: |
   大肥鱼每个月 50 元的付费钱包。聊天、记忆和后台任务先从钱包里预留，拿到智谱用量后再结算；
-  这个月花完就等到下个月。只给官方按量入口的 glm-5.3-flashx 付钱，管理员用 /钱包 查看余额。
+  这个月花完就等到下个月。只给官方按量入口的 glm-5.3-flashx 付钱。管理员用 /钱包 查看余额，
+  其他人可以用 /奶茶 或 /咖啡 每月问一次，有机会从钱包里留出一杯的钱。
 version: 0.1.1
 author: David Xu
 repo: https://github.com/DavidXu1209/astrbot_plugin_dafeiyu_budget

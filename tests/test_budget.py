@@ -125,7 +125,7 @@ _install_astrbot_stub()
 pkg = ModuleType('budget_acceptance')
 pkg.__path__ = [str(ROOT)]
 sys.modules[pkg.__name__] = pkg
-from budget_acceptance.ledger import BudgetDenied, Ledger, LIMIT
+from budget_acceptance.ledger import COFFEE, MILK_TEA, SPEAKING_KEEP, BudgetDenied, Ledger, LIMIT
 from budget_acceptance.main import (
     INPUT_MICRO_YUAN,
     MAX_OUTPUT,
@@ -134,6 +134,7 @@ from budget_acceptance.main import (
     BudgetedZhipu,
     bound_payload,
     prepare_provider_config,
+    render_treat,
     render_wallet,
 )
 from astrbot.core.provider.sources.zhipu_source import ProviderZhipu
@@ -211,6 +212,30 @@ class LedgerChecks(IsolatedAsyncioTestCase):
         frozen_text = render_wallet(await self.ledger.summary(NOW))
         self.assertIn('还剩 0.00 元', frozen_text)
         self.assertIn('本月已冻上，下月自动解开。', frozen_text)
+
+    async def test_drink_is_one_chance_and_leaves_speaking_money(self):
+        granted = await self.ledger.ask_treat('10001', 'milk_tea', NOW, roll=0)
+        self.assertEqual(granted['result'], 'granted')
+        self.assertIn('中了', render_treat(granted))
+        self.assertEqual(self.ledger.total(NOW), MILK_TEA)
+        text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('请客 15.00 元（奶茶，10001）', text)
+        self.assertEqual((await self.ledger.summary(NOW))['remaining'], LIMIT - MILK_TEA)
+        self.assertEqual((await self.ledger.ask_treat('10001', 'coffee', NOW, roll=0))['result'], 'asked')
+        self.assertEqual((await self.ledger.ask_treat('10002', 'coffee', NOW, roll=0))['result'], 'taken')
+
+        empty = Ledger(Path(self.temp.name) / 'other.sqlite3')
+        await empty.reserve(LIMIT - SPEAKING_KEEP - COFFEE + 1, NOW)
+        broke = await empty.ask_treat('10003', 'coffee', NOW, roll=0)
+        self.assertEqual(broke['result'], 'broke')
+        self.assertEqual((await empty.ask_treat('10003', 'coffee', NOW, roll=0))['result'], 'broke')
+
+        fresh = Ledger(Path(self.temp.name) / 'miss.sqlite3')
+        missed = await fresh.ask_treat('10004', 'coffee', NOW, roll=9999)
+        self.assertEqual(missed['result'], 'missed')
+        self.assertEqual(fresh.total(NOW), 0)
+        self.assertIn('没中', render_treat(missed))
+        self.assertEqual((await fresh.ask_treat('10004', 'coffee', NOW, roll=0))['result'], 'asked')
 
 
 class PayloadChecks(IsolatedAsyncioTestCase):

@@ -3,12 +3,19 @@ import asyncio
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import random
 import re
 import sqlite3
 import uuid
 
 CST = timezone(timedelta(hours=8))
 LIMIT = 50_000_000  # micro-yuan; never floats for budget decisions
+SPEAKING_KEEP = 15_000_000  # stay able to talk after a treat
+MILK_TEA = 15_000_000
+COFFEE = 20_000_000
+TREAT_PURSE = LIMIT - SPEAKING_KEEP
+MAX_TREAT_CHANCE = 4000  # basis points; a full purse is a 40% chance, not a promise
+DRINKS = {'milk_tea': MILK_TEA, 'coffee': COFFEE}
 _MONTH = re.compile(r'\d{4}-\d{2}$')
 
 
@@ -27,6 +34,12 @@ class Ledger:
                 'id TEXT PRIMARY KEY, month TEXT NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL)'
             )
             db.execute('CREATE INDEX IF NOT EXISTS charges_month ON charges(month)')
+            db.execute(
+                'CREATE TABLE IF NOT EXISTS treats ('
+                'month TEXT NOT NULL, user_key TEXT NOT NULL, kind TEXT NOT NULL, '
+                'amount INTEGER NOT NULL, state TEXT NOT NULL, '
+                'PRIMARY KEY (month, user_key))'
+            )
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=10)
@@ -116,6 +129,7 @@ class Ledger:
             not isinstance(name, str)
             or not name
             or name.startswith('freeze-')
+            or name.startswith('treat-')
             or len(name) > 200
             or not self._amount(amount, allow_zero=True)
             or not isinstance(month, str)
@@ -133,11 +147,78 @@ class Ledger:
                 'SELECT state, COALESCE(sum(amount),0) FROM charges WHERE month=? GROUP BY state',
                 (month,),
             ).fetchall()
+            winner = db.execute(
+                "SELECT user_key, kind, amount FROM treats WHERE month=? AND state='granted'",
+                (month,),
+            ).fetchone()
         states = {state: amount for state, amount in rows}
         total = sum(states.values())
         frozen = 'frozen' in states
         remaining = 0 if frozen or total >= LIMIT else LIMIT - total
-        return {'month': month, 'limit': LIMIT, 'states': states, 'total': total, 'frozen': frozen, 'remaining': remaining}
+        treat_for = None
+        if winner is not None:
+            treat_for = {'user': winner[0], 'kind': winner[1], 'amount': winner[2]}
+        return {
+            'month': month, 'limit': LIMIT, 'states': states, 'total': total,
+            'frozen': frozen, 'remaining': remaining, 'treat_for': treat_for,
+        }
+
+    def _ask_treat(self, user_key, kind, now, roll):
+        """One ask per person per month. At most one granted drink, and only by chance."""
+        if kind not in DRINKS:
+            raise ValueError('unknown drink')
+        amount = DRINKS[kind]
+        if isinstance(roll, bool) or not isinstance(roll, int) or not 0 <= roll < 10000:
+            raise ValueError('treat roll must be an integer from 0 through 9999')
+        if (
+            not isinstance(user_key, str)
+            or not user_key.strip()
+            or len(user_key) > 64
+            or any(char in user_key for char in '\n\r')
+        ):
+            return {'result': 'bad_user', 'chance': 0, 'amount': amount, 'kind': kind}
+        user_key = user_key.strip()
+        month = self.month(now)
+        with closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute(
+                "SELECT 1 FROM charges WHERE month=? AND state='frozen' LIMIT 1", (month,)
+            ).fetchone():
+                return {'result': 'frozen', 'chance': 0, 'amount': amount, 'kind': kind}
+            prior = db.execute(
+                'SELECT state FROM treats WHERE month=? AND user_key=?', (month, user_key)
+            ).fetchone()
+            if prior is not None:
+                return {'result': 'asked', 'chance': 0, 'amount': amount, 'kind': kind}
+            if db.execute('SELECT 1 FROM charges WHERE id=?', (f'treat-{month}',)).fetchone():
+                return {'result': 'taken', 'chance': 0, 'amount': amount, 'kind': kind}
+            used = db.execute(
+                'SELECT COALESCE(sum(amount),0) FROM charges WHERE month=?', (month,)
+            ).fetchone()[0]
+            available = LIMIT - used - SPEAKING_KEEP
+            if available < amount:
+                return {'result': 'broke', 'chance': 0, 'amount': amount, 'kind': kind}
+            chance = MAX_TREAT_CHANCE * available // TREAT_PURSE
+            if roll >= chance:
+                db.execute(
+                    "INSERT INTO treats VALUES(?,?,?,?,'missed')",
+                    (month, user_key, kind, amount),
+                )
+                return {'result': 'missed', 'chance': chance, 'amount': amount, 'kind': kind}
+            db.execute(
+                "INSERT INTO charges VALUES(?,?,?,'treat')",
+                (f'treat-{month}', month, amount),
+            )
+            db.execute(
+                "INSERT INTO treats VALUES(?,?,?,?,'granted')",
+                (month, user_key, kind, amount),
+            )
+            return {'result': 'granted', 'chance': chance, 'amount': amount, 'kind': kind}
+
+    async def ask_treat(self, user_key, kind, now=None, roll=None):
+        if roll is None:
+            roll = random.randrange(10000)
+        return await asyncio.to_thread(self._ask_treat, user_key, kind, now, roll)
 
     async def summary(self, now=None):
         return await asyncio.to_thread(self._summary, now)
