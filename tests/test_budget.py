@@ -89,11 +89,25 @@ def _install_astrbot_stub():
             return cls
         return decorate
 
+    class _PermissionType:
+        ADMIN = 'admin'
+
+    def _passthrough(*args, **kwargs):
+        def decorate(fn):
+            return fn
+        return decorate
+
+    class _Filter:
+        PermissionType = _PermissionType
+        command = staticmethod(_passthrough)
+        permission_type = staticmethod(_passthrough)
+
     _package('astrbot')
     api = _package('astrbot.api')
     api.logger = _Logger()
     _module('astrbot.api.provider', ProviderType=ProviderType)
     _module('astrbot.api.star', Star=Star, StarTools=StarTools)
+    _module('astrbot.api.event', filter=_Filter())
     _package('astrbot.core')
     _package('astrbot.core.provider')
     _module(
@@ -120,6 +134,7 @@ from budget_acceptance.main import (
     BudgetedZhipu,
     bound_payload,
     prepare_provider_config,
+    render_wallet,
 )
 from astrbot.core.provider.sources.zhipu_source import ProviderZhipu
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
@@ -180,6 +195,22 @@ class LedgerChecks(IsolatedAsyncioTestCase):
     async def test_seed_rejects_freeze_marker_names(self):
         with self.assertRaises(ValueError):
             self.ledger.seed('freeze-2026-11', 1, '2026-11')
+
+    async def test_wallet_summary_shows_spend_hold_and_freeze(self):
+        await self.ledger.reserve(1_000_000, NOW)
+        token = await self.ledger.reserve(2_000_000, NOW)
+        self.assertTrue(await self.ledger.settle(token, 500_000))
+        text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('大肥鱼钱包 · 2026-11', text)
+        self.assertIn('已花 0.50 元', text)
+        self.assertIn('预留未结 1.00 元', text)
+        self.assertIn('还剩 48.50 元', text)
+        self.assertNotIn('本月已冻上', text)
+        frozen = await self.ledger.reserve(100, NOW)
+        self.assertFalse(await self.ledger.settle(frozen, 101))
+        frozen_text = render_wallet(await self.ledger.summary(NOW))
+        self.assertIn('还剩 0.00 元', frozen_text)
+        self.assertIn('本月已冻上，下月自动解开。', frozen_text)
 
 
 class PayloadChecks(IsolatedAsyncioTestCase):

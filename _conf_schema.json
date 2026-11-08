@@ -1,8 +1,8 @@
 {
   "id": {
-    "description": "提供商源 ID。在 AstrBot「服务提供商」页面新建本类型提供商时填写，AstrBot 用「提供商ID/模型ID」引用它。",
+    "description": "提供商源 ID。在 AstrBot「服务提供商」页面新建大肥鱼钱包时填写，AstrBot 用「提供商ID/模型ID」引用它。",
     "type": "string",
-    "default": "glm_budget",
+    "default": "dafeiyu_wallet",
     "hint": "本插件的参数都在「服务提供商」页面生效；本文件用于后台展示字段名与默认值，插件不读取「插件配置」页中的值。"
   },
   "enable": {

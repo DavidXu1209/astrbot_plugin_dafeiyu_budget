@@ -56,12 +56,12 @@ class Ledger:
             if db.execute(
                 "SELECT 1 FROM charges WHERE month=? AND state='frozen' LIMIT 1", (month,)
             ).fetchone():
-                raise BudgetDenied('本月API预算已达50元保护线，请下月再用付费模型。')
+                raise BudgetDenied('大肥鱼钱包本月 50 元已经用完，请下月再用。')
             used = db.execute(
                 'SELECT COALESCE(sum(amount),0) FROM charges WHERE month=?', (month,)
             ).fetchone()[0]
             if used + amount > LIMIT:
-                raise BudgetDenied('本月API预算已达50元保护线，请下月再用付费模型。')
+                raise BudgetDenied('大肥鱼钱包本月 50 元已经用完，请下月再用。')
             token = uuid.uuid4().hex
             db.execute("INSERT INTO charges VALUES(?,?,?,'reserved')", (token, month, amount))
             return token
@@ -125,6 +125,22 @@ class Ledger:
             raise ValueError('invalid prior-trial seed')
         with closing(self._connect()) as db, db:
             db.execute("INSERT OR IGNORE INTO charges VALUES(?,?,?,'prior_trial')", (name, month, amount))
+
+    def _summary(self, now):
+        month = self.month(now)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                'SELECT state, COALESCE(sum(amount),0) FROM charges WHERE month=? GROUP BY state',
+                (month,),
+            ).fetchall()
+        states = {state: amount for state, amount in rows}
+        total = sum(states.values())
+        frozen = 'frozen' in states
+        remaining = 0 if frozen or total >= LIMIT else LIMIT - total
+        return {'month': month, 'limit': LIMIT, 'states': states, 'total': total, 'frozen': frozen, 'remaining': remaining}
+
+    async def summary(self, now=None):
+        return await asyncio.to_thread(self._summary, now)
 
     def total(self, now=None):
         with closing(self._connect()) as db:

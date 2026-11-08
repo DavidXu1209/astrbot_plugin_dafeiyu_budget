@@ -1,9 +1,8 @@
 name: astrbot_plugin_dafeiyu_budget
-display_name: GLM 月预算保护
+display_name: 大肥鱼钱包
 desc: |
-  在 AstrBot 原生智谱适配器外面加一层每月 50 元的预算保护账本：每次付费请求先预留额度，
-  拿到厂商返回的用量后再结算；聊天和后台任务共享同一本账，超预算直接拒绝新的付费请求。
-  只允许智谱官方按量入口的 glm-5.3-flashx，按输入 2 元、输出 7 元每百万 token 保守记账。
+  大肥鱼每个月 50 元的付费钱包。聊天、记忆和后台任务先从钱包里预留，拿到智谱用量后再结算；
+  这个月花完就等到下个月。只给官方按量入口的 glm-5.3-flashx 付钱，管理员用 /钱包 查看余额。
 version: 0.1.1
 author: David Xu
 repo: https://github.com/DavidXu1209/astrbot_plugin_dafeiyu_budget
@@ -11,8 +10,8 @@ astrbot_version: ">=4.16.0"
 support_platforms:
   - aiocqhttp
 tags:
+  - 大肥鱼
+  - 钱包
   - 智谱
   - GLM
   - 预算
-  - 模型提供商
-  - 视觉

@@ -8,6 +8,7 @@ import math
 import threading
 
 from astrbot.api import logger
+from astrbot.api.event import filter
 from astrbot.api.provider import ProviderType
 from astrbot.api.star import Star, StarTools
 from astrbot.core.provider.register import provider_cls_map, provider_registry, register_provider_adapter
@@ -47,9 +48,9 @@ def prepare_provider_config(provider_config):
     config = copy.deepcopy(provider_config)
     api_base = config.get('api_base', '')
     if not isinstance(api_base, str) or api_base.rstrip('/') != OFFICIAL_API_BASE:
-        raise BudgetDenied('仅允许智谱官方按量API入口。')
+        raise BudgetDenied('大肥鱼钱包只走智谱官方按量入口。')
     if not has_api_key(config.get('key')):
-        raise BudgetDenied('未配置智谱按量 API Key。')
+        raise BudgetDenied('大肥鱼钱包还没放进智谱按量 API Key。')
     if isinstance(config.get('key'), str):
         config['key'] = [config['key']]
     config['custom_extra_body'] = {
@@ -150,19 +151,19 @@ def _compress_image(url):
         or len(url) > 24_000_000
         or 'base64' not in url.split(',', 1)[0]
     ):
-        raise BudgetDenied('图片必须先由原生适配器解析为有限的本地图片。')
+        raise BudgetDenied('图片必须是内联的 data:image，大肥鱼钱包才肯付。')
     try:
         encoded = url.split(',', 1)[1]
         raw = base64.b64decode(encoded, validate=True)
     except Exception:
-        raise BudgetDenied('图片必须先由原生适配器解析为有限的本地图片。') from None
+        raise BudgetDenied('图片必须是内联的 data:image，大肥鱼钱包才肯付。') from None
     with _IMAGE_LOCK:
         previous_limit = Image.MAX_IMAGE_PIXELS
         Image.MAX_IMAGE_PIXELS = _MAX_PIXELS
         try:
             with Image.open(io.BytesIO(raw)) as image:
                 if image.width * image.height > _MAX_PIXELS:
-                    raise BudgetDenied('图片尺寸过大。')
+                    raise BudgetDenied('图片太大，大肥鱼钱包没有预留。')
                 image = ImageOps.exif_transpose(image).convert('RGB')
                 image.thumbnail((1024, 1024))
                 stream = io.BytesIO()
@@ -171,7 +172,7 @@ def _compress_image(url):
             raise
         except Exception as exc:
             logger.warning('图片解析失败：%s', type(exc).__name__)
-            raise BudgetDenied('图片无法解析或尺寸过大。') from None
+            raise BudgetDenied('图片打不开，大肥鱼钱包没有预留。') from None
         finally:
             Image.MAX_IMAGE_PIXELS = previous_limit
     return 'data:image/jpeg;base64,' + base64.b64encode(stream.getvalue()).decode()
@@ -182,7 +183,7 @@ def bound_payload(payload):
     if not isinstance(payload, dict):
         raise BudgetDenied('不支持的请求内容。')
     if payload.get('model') != MODEL:
-        raise BudgetDenied('预算通道只允许已核价的FlashX模型。')
+        raise BudgetDenied('大肥鱼钱包只给 glm-5.3-flashx 付过价。')
     result = copy.deepcopy(payload)
     count = 0
 
@@ -191,14 +192,14 @@ def bound_payload(payload):
         if isinstance(value, dict):
             part_type = value.get('type')
             if part_type in _UNPRICED_PARTS:
-                raise BudgetDenied('预算通道只接受文本和已核价的图片。')
+                raise BudgetDenied('大肥鱼钱包只支付文本和已核价的图片。')
             if part_type == 'image_url':
                 count += 1
                 if count > 4:
-                    raise BudgetDenied('单次最多处理4张图片。')
+                    raise BudgetDenied('单次最多 4 张图片，多出来的大肥鱼钱包不付。')
                 image_url = value.get('image_url')
                 if not isinstance(image_url, dict) or 'url' not in image_url:
-                    raise BudgetDenied('图片必须先由原生适配器解析为有限的本地图片。')
+                    raise BudgetDenied('图片必须是内联的 data:image，大肥鱼钱包才肯付。')
                 value['image_url']['url'] = _compress_image(image_url['url'])
                 measured = {}
                 for key, item in value.items():
@@ -220,7 +221,7 @@ def bound_payload(payload):
     measured = walk(result)
     text_bytes = len(json.dumps(measured, ensure_ascii=False).encode())
     if text_bytes > 131072:
-        raise BudgetDenied('上下文超过付费通道的长度保护线，请新开会话。')
+        raise BudgetDenied('这次太长了，大肥鱼钱包不肯预留，请新开会话。')
     result['max_tokens'] = MAX_OUTPUT
     # Text byte fallback upper bound plus 65,536 input-token allowance per
     # 1024px image and fixed request overhead. Cached input uses full price.
@@ -228,9 +229,39 @@ def bound_payload(payload):
     return result, reserve
 
 
-@register_provider_adapter(TYPE, '共享月预算的智谱原生视觉通道',
-    provider_type=ProviderType.CHAT_COMPLETION, provider_display_name='GLM 月预算通道（50元/月）',
-    default_config_tmpl={'id': 'glm_budget', 'provider': 'zhipu', 'type': TYPE,
+def format_yuan(micro):
+    """Format an integer micro-yuan amount as yuan without binary floats."""
+    if isinstance(micro, bool) or not isinstance(micro, int):
+        raise ValueError('yuan amount must be an integer number of micro-yuan')
+    sign = '-' if micro < 0 else ''
+    whole, frac = divmod(abs(micro), 1_000_000)
+    body = f'{whole}.{frac:06d}'.rstrip('0').rstrip('.')
+    if '.' not in body:
+        body += '.00'
+    elif len(body.split('.', 1)[1]) == 1:
+        body += '0'
+    return f'{sign}{body} 元'
+
+
+def render_wallet(summary):
+    states = summary['states']
+    spent = states.get('settled', 0) + states.get('overrun', 0) + states.get('prior_trial', 0)
+    held = states.get('reserved', 0)
+    lines = [
+        f"大肥鱼钱包 · {summary['month']}",
+        f"额度 {format_yuan(summary['limit'])}",
+        f"已花 {format_yuan(spent)}",
+        f"预留未结 {format_yuan(held)}",
+        f"还剩 {format_yuan(summary['remaining'])}",
+    ]
+    if summary['frozen']:
+        lines.append('本月已冻上，下月自动解开。')
+    return '\n'.join(lines)
+
+
+@register_provider_adapter(TYPE, '大肥鱼的共享月预算钱包',
+    provider_type=ProviderType.CHAT_COMPLETION, provider_display_name='大肥鱼钱包（50元/月）',
+    default_config_tmpl={'id': 'dafeiyu_wallet', 'provider': 'zhipu', 'type': TYPE,
                          'provider_type': 'chat_completion', 'enable': True, 'key': [],
                          'model': MODEL,
                          'api_base': 'https://open.bigmodel.cn/api/paas/v4/', 'timeout': 45})
@@ -257,9 +288,9 @@ class BudgetedZhipu(ProviderZhipu):
 
     async def _query(self, payloads, tools, *, request_max_retries=None, conversation_id=None):
         if tools:
-            raise BudgetDenied('此预算通道尚未开放自动工具调用。')
+            raise BudgetDenied('大肥鱼钱包还没开放自动工具调用。')
         if not has_api_key(getattr(self, 'api_keys', None)):
-            raise BudgetDenied('未配置智谱按量 API Key。')
+            raise BudgetDenied('大肥鱼钱包还没放进智谱按量 API Key。')
         payloads, reserve = await asyncio.to_thread(bound_payload, payloads)
         token = await self.ledger.reserve(reserve)
         # Unknown failures/cancellation retain the reserve; there is no refund
@@ -282,6 +313,15 @@ class BudgetPlugin(Star):
     def __init__(self, context, config=None):
         super().__init__(context)
         self.config = config
+
+    def _ledger(self):
+        return Ledger(StarTools.get_data_dir('astrbot_plugin_dafeiyu_budget') / 'monthly.sqlite3')
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command('钱包', alias={'余额'})
+    async def wallet(self, event):
+        """查看大肥鱼钱包本月余额。仅管理员。"""
+        yield event.plain_result(render_wallet(await self._ledger().summary()))
 
     async def initialize(self):
         manager = self.context.provider_manager
